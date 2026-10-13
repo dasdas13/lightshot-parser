@@ -4,7 +4,7 @@
 
 - **Скриншотов за раз** — программа сама остановится, когда сохранит столько картинок (`0` — пока не нажмёте «Стоп»).
 - **Задержка** — пауза после каждого запроса, по умолчанию 250 мс.
-- Всё сохраняется в папку `shots/Lightshot/` рядом с программой.
+- **Сохранять в** — папка для скриншотов, выбирается кнопкой «Обзор…». По умолчанию `shots/Lightshot/` рядом с программой.
 
 ## Linux Mint
 
@@ -13,6 +13,12 @@ sudo apt install python3 python3-tk git
 git clone https://github.com/dasdas13/lightshot-parser.git
 cd lightshot-parser
 python3 lightshot.pyw
+```
+
+Чтобы программа появилась в меню приложений с иконкой:
+
+```bash
+./install-linux.sh
 ```
 
 ## Windows
@@ -25,7 +31,16 @@ cd lightshot-parser
 pythonw lightshot.pyw
 ```
 
-Или просто скачайте `lightshot.pyw` и запустите двойным кликом.
+Или просто скачайте `lightshot.pyw` и `icon.png` в одну папку и запустите `lightshot.pyw` двойным кликом.
+
+### Собрать exe с иконкой
+
+```bat
+pip install pyinstaller
+pyinstaller --onefile --windowed --name LightshotParser --icon icon.ico --add-data "icon.png;." lightshot.pyw
+```
+
+Готовый `dist\LightshotParser.exe` сохраняет скриншоты в `shots\Lightshot\` рядом с самим exe.
 
 ## Проверка парсера
 

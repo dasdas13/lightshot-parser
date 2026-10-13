@@ -3,7 +3,9 @@
 Запуск: python3 lightshot.pyw   |   проверка парсера: python3 lightshot.pyw --check"""
 import json, os, queue, random, re, socket, string, subprocess, sys, threading, urllib.request
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "Lightshot")
+# Рядом со скриптом, а у собранного exe — рядом с exe (onefile распаковывается во временную папку, там всё бы пропало).
+BASE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+DEFAULT_OUT = os.path.join(BASE, "shots", "Lightshot")  # можно сменить в окне кнопкой «Обзор…»
 ALPHABET = string.ascii_lowercase + string.digits
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 OG = re.compile(r'<meta property="og:image" content="([^"]+)"')
@@ -36,15 +38,13 @@ def get(url):
         return r.read(), r.geturl()
 
 
-def open_folder():
-    os.makedirs(OUT, exist_ok=True)
-    os.startfile(OUT) if sys.platform == "win32" else subprocess.Popen(["xdg-open", OUT])
+def open_folder(path):
+    os.startfile(path) if sys.platform == "win32" else subprocess.Popen(["xdg-open", path])
 
 
-def worker(count, delay, q, stop):
+def worker(out, count, delay, q, stop):
     """Одна итерация = случайный код -> страница -> картинка. Пауза delay после КАЖДОГО запроса.
-    Сама останавливается, когда сохранено count скриншотов (0 — без ограничений)."""
-    os.makedirs(OUT, exist_ok=True)
+    Сама останавливается, когда сохранено count скриншотов (0 — без ограничений). Папка out уже создана."""
     saved = 0
     while not stop.is_set() and (not count or saved < count):
         code = "".join(random.choices(ALPHABET, k=6))
@@ -56,7 +56,7 @@ def worker(count, delay, q, stop):
                 q.put(("skip", f"·  {code}  — нет скриншота"))
             else:
                 name = code + (os.path.splitext(url.split("?")[0])[1] or ".png")
-                with open(os.path.join(OUT, name), "wb") as f:
+                with open(os.path.join(out, name), "wb") as f:
                     f.write(data)
                 saved += 1
                 q.put(("ok", f"✔  {name}  ({len(data) // 1024} КБ)"))
@@ -70,14 +70,18 @@ def worker(count, delay, q, stop):
 
 def main():
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import filedialog, ttk
     try:  # чёткий текст на HiDPI (только Windows)
         import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
     BG, CARD, FG, DIM, ACCENT = "#1b1d26", "#272a37", "#e8e9f0", "#8b8fa3", "#6c8cff"
     root = tk.Tk()
-    root.title("Lightshot Parser"); root.geometry("600x520"); root.minsize(560, 400); root.configure(bg=BG)
+    root.title("Lightshot Parser"); root.geometry("600x570"); root.minsize(560, 450); root.configure(bg=BG)
+    try:  # иконка окна (Windows и Linux); в exe icon.png лежит во внутренней папке _MEIPASS
+        root.iconphoto(True, tk.PhotoImage(file=os.path.join(getattr(sys, "_MEIPASS", BASE), "icon.png")))
+    except Exception:
+        pass
     s = ttk.Style(root); s.theme_use("clam")
     s.configure("TFrame", background=BG)
     s.configure("TLabel", background=BG, foreground=FG, font=(UI, 10))
@@ -87,12 +91,12 @@ def main():
     s.map("Go.TButton", background=[("active", "#869fff")])
 
     ttk.Label(root, text="Lightshot Parser", font=(UI, 20, "bold")).pack(anchor="w", padx=18, pady=(16, 0))
-    ttk.Label(root, text="Случайные скриншоты с prnt.sc  →  shots/Lightshot", foreground=DIM).pack(anchor="w", padx=18)
+    ttk.Label(root, text="Случайные скриншоты с prnt.sc", foreground=DIM).pack(anchor="w", padx=18)
 
     top = ttk.Frame(root); top.pack(fill="x", padx=18, pady=14)
     form = ttk.Frame(top); form.pack(side="left")
     btn = ttk.Button(top, text="▶  Старт", style="Go.TButton"); btn.pack(side="right")
-    ttk.Button(top, text="Папка", command=open_folder).pack(side="right", padx=8)
+    ttk.Button(top, text="Папка", command=lambda: open_out()).pack(side="right", padx=8)
 
     def field(row, label, value, to, step):
         var = tk.IntVar(value=value)
@@ -102,6 +106,13 @@ def main():
         return var
     count = field(0, "Скриншотов за раз (0 — без лимита)", 100, 1000000, 10)
     delay = field(1, "Задержка, мс", 250, 5000, 50)
+
+    row = ttk.Frame(root); row.pack(fill="x", padx=18, pady=(0, 12))
+    ttk.Label(row, text="Сохранять в").pack(side="left")
+    outdir = tk.StringVar(value=DEFAULT_OUT)
+    ttk.Button(row, text="Обзор…", command=lambda: browse()).pack(side="right")
+    tk.Entry(row, textvariable=outdir, font=(UI, 10), bg=CARD, fg=FG, insertbackground=FG, relief="flat",
+             highlightthickness=0).pack(side="left", fill="x", expand=True, padx=10, ipady=6)
 
     stats = ttk.Label(root, font=(UI, 11, "bold")); stats.pack(anchor="w", padx=18, pady=(0, 8))
     log = tk.Text(root, bg=CARD, fg=FG, bd=0, highlightthickness=0, state="disabled", font=(MONO, 10), padx=12, pady=10)
@@ -118,13 +129,36 @@ def main():
         except tk.TclError:
             return default
 
+    def prepare():  # путь из поля -> созданная папка (или None, а ошибка уходит в лог)
+        out = os.path.abspath(os.path.expanduser(outdir.get().strip() or DEFAULT_OUT))
+        try:
+            os.makedirs(out, exist_ok=True)
+            return out
+        except OSError as e:
+            q.put(("err", f"✖  папка «{out}»: {e}"))
+
+    def open_out():
+        out = prepare()
+        if out:
+            open_folder(out)
+
+    def browse():
+        cur = outdir.get().strip()
+        d = filedialog.askdirectory(initialdir=cur if os.path.isdir(cur) else os.path.expanduser("~"),
+                                    title="Куда сохранять скриншоты")
+        if d:  # при отмене приходит '' (или пустой кортеж)
+            outdir.set(os.path.normpath(d))
+
     def toggle():
         if st["stop"] and not st["stop"].is_set():
             st["stop"].set(); btn.config(text="▶  Старт")
             return
+        out = prepare()
+        if not out:
+            return
         # новый Event на каждый запуск: старый поток доживает свой запрос и выходит
         st.update(ok=0, skip=0, err=0, total=num(count, 100), stop=threading.Event())
-        threading.Thread(target=worker, args=(st["total"], num(delay, 250) / 1000, q, st["stop"]), daemon=True).start()
+        threading.Thread(target=worker, args=(out, st["total"], num(delay, 250) / 1000, q, st["stop"]), daemon=True).start()
         btn.config(text="■  Стоп")
 
     def poll():
