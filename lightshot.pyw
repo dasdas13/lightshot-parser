@@ -6,6 +6,7 @@ import json, os, queue, random, re, socket, string, subprocess, sys, threading, 
 # Рядом со скриптом, а у собранного exe — рядом с exe (onefile распаковывается во временную папку, там всё бы пропало).
 BASE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(BASE, "shots", "Lightshot")  # можно сменить в окне кнопкой «Обзор…»
+HISTORY = os.path.join(BASE, "downloaded.txt")  # коды скачанных скриншотов, по одному в строке; живёт отдельно от папки со скриншотами
 ALPHABET = string.ascii_lowercase + string.digits
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 OG = re.compile(r'<meta property="og:image" content="([^"]+)"')
@@ -38,6 +39,16 @@ def get(url):
         return r.read(), r.geturl()
 
 
+def load_seen(out):
+    """Коды уже скачанных скриншотов: downloaded.txt + имена файлов в папке (скачанные до появления истории).
+    Историю не чистим при удалении файлов — иначе удалённый скриншот скачался бы заново."""
+    seen = set()
+    if os.path.exists(HISTORY):
+        with open(HISTORY, encoding="utf-8") as f:
+            seen = {line.strip() for line in f if line.strip()}
+    return seen | {os.path.splitext(n)[0] for n in os.listdir(out)}
+
+
 def open_folder(path):
     os.startfile(path) if sys.platform == "win32" else subprocess.Popen(["xdg-open", path])
 
@@ -46,8 +57,12 @@ def worker(out, count, delay, q, stop):
     """Одна итерация = случайный код -> страница -> картинка. Пауза delay после КАЖДОГО запроса.
     Сама останавливается, когда сохранено count скриншотов (0 — без ограничений). Папка out уже создана."""
     saved = 0
+    seen = load_seen(out)
+    q.put(("info", f"ℹ  В истории {len(seen)} скриншотов — повторно они скачиваться не будут"))
     while not stop.is_set() and (not count or saved < count):
         code = "".join(random.choices(ALPHABET, k=6))
+        if code in seen:  # уже скачан (в этой или прошлой сессии) — без запроса и без паузы
+            continue
         try:
             url = parse(get(f"https://prnt.sc/{code}")[0].decode("utf-8", "ignore"))
             stop.wait(delay)
@@ -58,6 +73,9 @@ def worker(out, count, delay, q, stop):
                 name = code + (os.path.splitext(url.split("?")[0])[1] or ".png")
                 with open(os.path.join(out, name), "wb") as f:
                     f.write(data)
+                seen.add(code)  # в историю только УСПЕШНО скачанные: «нет скриншота» не пишем, он мог появиться позже
+                with open(HISTORY, "a", encoding="utf-8") as h:
+                    h.write(code + "\n")
                 saved += 1
                 q.put(("ok", f"✔  {name}  ({len(data) // 1024} КБ)"))
         except Exception as e:
@@ -117,7 +135,7 @@ def main():
     stats = ttk.Label(root, font=(UI, 11, "bold")); stats.pack(anchor="w", padx=18, pady=(0, 8))
     log = tk.Text(root, bg=CARD, fg=FG, bd=0, highlightthickness=0, state="disabled", font=(MONO, 10), padx=12, pady=10)
     log.pack(fill="both", expand=True, padx=18, pady=(0, 18))
-    for tag, color in (("ok", "#4cd38b"), ("skip", DIM), ("err", "#ff6b6b"), ("done", ACCENT)):
+    for tag, color in (("ok", "#4cd38b"), ("skip", DIM), ("err", "#ff6b6b"), ("done", ACCENT), ("info", DIM)):
         log.tag_config(tag, foreground=color)
 
     st = {"ok": 0, "skip": 0, "err": 0, "total": 0, "stop": None}
@@ -167,7 +185,7 @@ def main():
                 kind, msg = q.get_nowait()
                 if kind == "done":
                     st["stop"].set(); btn.config(text="▶  Старт")
-                else:
+                elif kind != "info":
                     st[kind] += 1
                 log.config(state="normal"); log.insert("end", msg + "\n", kind)
                 if int(log.index("end-1c").split(".")[0]) > 300:
@@ -189,6 +207,14 @@ if __name__ == "__main__":
         assert parse('<meta property="og:image" content="https://image.prntscr.com/image/x.png">') == "https://image.prntscr.com/image/x.png"
         assert parse('<meta property="og:image" content="//st.prntscr.com/2025/img/0_173a7b_211be8ff.png">') is None
         assert parse("<html></html>") is None
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:  # история = downloaded.txt + файлы в папке; пустые строки игнорируются
+            HISTORY, out = os.path.join(t, "h.txt"), os.path.join(t, "out")
+            os.mkdir(out)
+            assert load_seen(out) == set()
+            open(os.path.join(out, "abc123.png"), "w").close()
+            open(HISTORY, "w").write("zzz999\n\n")
+            assert load_seen(out) == {"abc123", "zzz999"}
         print("ok")
     else:
         main()
